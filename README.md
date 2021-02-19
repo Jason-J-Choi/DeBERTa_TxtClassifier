@@ -14,7 +14,6 @@ Specifics of installing DeBERTa can be found directly at the [Github page](https
 ## Introducing TextFooler**
 A Model for Natural Language Attack on Text Classification and Inference
 
-
 ## Setup
 *Install the necessary requirement files from the requirements.txt. The requirements.txt was compiled from all the supporting repositories. Alternatively, install DeBERTa via Docker and separately install TextFooler.
 ```
@@ -22,6 +21,11 @@ pip install requirements.txt
 ```
 
 *Install the TextFooler supporting system [ESIM system](https://github.com/coetaur0/ESIM).
+```
+cd ESIM
+python setup.py install
+cd ..
+```
 
 #### Use DeBERTa in existing code
 ``` Python
@@ -112,6 +116,8 @@ python3 -m DeBERTa.apps.run --task_name $task --do_train  \
 - 1. By default we will cache the pre-trained model and tokenizer at `$HOME/.~DeBERTa`, you may need to clean it if the downloading failed unexpectedly.
 - 2. You can also try our models with [HF Transformers](https://github.com/huggingface/transformers). But when you try XXLarge model you need to specify --sharded_ddp argument. Please check our [XXLarge model card](https://huggingface.co/microsoft/deberta-xxlarge-v2) for more details.
 
+
+## Additional Input for TextFooler
 * (Optional) Run the following code to pre-compute the cosine similarity scores between word pairs based on the [counter-fitting word embeddings](https://drive.google.com/open?id=1bayGomljWb6HeYDMTDKXrh0HackKtSlx).
 
 ```
