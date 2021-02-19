@@ -15,7 +15,14 @@ Specifics of installing DeBERTa can be found directly at the [Github page](https
 A Model for Natural Language Attack on Text Classification and Inference
 
 ## Setup
-*Install the necessary requirement files from the requirements.txt. The requirements.txt was compiled from all the supporting repositories. Alternatively, install DeBERTa via Docker and separately install TextFooler.
+* Due to large files, have git lfs setup.
+```
+git lfs install
+```
+If errors still prevail due to large file size, try with git bash terminal - https://github.com/git-lfs/git-lfs/issues/3216
+
+
+* Install the necessary requirement files from the requirements.txt. The requirements.txt was compiled from all the supporting repositories. Alternatively, install DeBERTa via Docker and separately install TextFooler.
 ```
 pip install requirements.txt
 ```
