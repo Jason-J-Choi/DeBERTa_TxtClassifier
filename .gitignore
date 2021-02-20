@@ -3,8 +3,14 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# git
 .git
+
+# pycharm
 .idea
+
+# omit models
+model/
 
 # C extensions
 *.so
