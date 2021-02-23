@@ -1,0 +1,6 @@
+"datasets/raw/MNLI/multinli_1.0_train.jsonl" filter=lfs diff=lfs merge=lfs -text
+"datasets/raw/MNLI/multinli_1.0_train.txt" filter=lfs diff=lfs merge=lfs -text
+"datasets/raw/snli_1.0/snli_1.0_train.txt" filter=lfs diff=lfs merge=lfs -text
+"datasets/raw/yelp/train.csv" filter=lfs diff=lfs merge=lfs -text
+"datasets/raw/snli_1.0/snli_1.0_train.jsonl" filter=lfs diff=lfs merge=lfs -text
+"datasets/raw/yelp/train_tok.csv" filter=lfs diff=lfs merge=lfs -text
