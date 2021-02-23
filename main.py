@@ -130,7 +130,7 @@ def train(model, X_train, X_masks, Y_train):
                       )
     epochs = 4
     total_steps = len(train_dataloader) * epochs
-    loss_fn = torch.nn.CrossEntropyLoss();
+    loss_fn = torch.nn.CrossEntropyLoss()
 
     for step, batch in enumerate(train_dataloader):
         # Load batch to GPU

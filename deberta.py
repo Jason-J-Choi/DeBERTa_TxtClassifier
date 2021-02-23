@@ -138,7 +138,7 @@ class DeBERTaTxtClassifier(torch.nn.Module):
 
         outputs = self.deberta(input_ids=input_ids,
                             attention_mask=attention_mask, output_all_encoded_layers=False)
-        nextTensor = torch.empty(32, 768, dtype=torch.float)
+        nextTensor = torch.empty(len(input_ids), 768, dtype=torch.float)
         # Extract the last hidden state of the token `[CLS]` for classification task
         last_hidden_state_cls = outputs[0]
         
