@@ -2,9 +2,8 @@
 import os
 import torch
 
-from DeBERTa.deberta.bert import *
-from DeBERTa.deberta.config import ModelConfig
-
+from DeBERTa.DeBERTa.deberta.bert import *
+from DeBERTa.DeBERTa.deberta.config import ModelConfig
 
 class DeBERTaReconfig(torch.nn.Module):
     def __init__(self, model_path, model_config_path):
@@ -117,6 +116,35 @@ class DeBERTaReconfig(torch.nn.Module):
 
 
 class DeBERTaTxtClassifier(torch.nn.Module):
-    def __init__(self, model_path, model_config_path):
+    def __init__(self, model_path, model_config_path, freeze_deberta=True):
         super().__init__()
         self.deberta = DeBERTaReconfig(model_path, model_config_path)
+        # Specify hidden size of BERT, hidden size of our classifier, and number of labels
+        D_in, H, D_out = 768, 50, 2
+
+        # Instantiate an one-layer feed-forward classifier
+        self.classifier = torch.nn.Sequential(
+            torch.nn.Linear(D_in, H),
+            torch.nn.ReLU(),
+            #torch.nn.Dropout(0.5),
+            torch.nn.Linear(H, D_out)
+        )
+
+        if freeze_deberta:
+            for param in self.deberta.parameters():
+                param.requires_grad = False
+        
+    def forward(self, input_ids, attention_mask):
+
+        outputs = self.deberta(input_ids=input_ids,
+                            attention_mask=attention_mask, output_all_encoded_layers=False)
+        nextTensor = torch.empty(32, 768, dtype=torch.float)
+        # Extract the last hidden state of the token `[CLS]` for classification task
+        last_hidden_state_cls = outputs[0]
+        
+        for i in range(len(last_hidden_state_cls)):
+            nextTensor[i] = last_hidden_state_cls[i][0]
+        # Feed input to classifier to compute logits
+        logits = self.classifier(nextTensor)
+
+        return logits
