@@ -14,6 +14,7 @@ from nltk.stem import WordNetLemmatizer
 import time
 import collections
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
+import json
 
 nltk.download('stopwords')
 ps = PorterStemmer()
@@ -89,6 +90,7 @@ def preprocess(filepath, basepath = './datasets/raw/'):
         print(df)
     
     X = X.apply(clean_text).apply(text_process)
+    df.to_csv('./outputs/X_' + filepath)
     return X, y
 
 def tokenize(input_sentences, max_seq_len = 512):
@@ -131,19 +133,23 @@ def train(model, X_train, X_masks, Y_train):
     epochs = 4
     total_steps = len(train_dataloader) * epochs
     loss_fn = torch.nn.CrossEntropyLoss()
-
-    for step, batch in enumerate(train_dataloader):
-        # Load batch to GPU
-        b_input_ids, b_attn_mask, b_labels = tuple(t for t in batch)
-        model.zero_grad()
-        y_pred = model(b_input_ids, b_attn_mask)
-        loss = loss_fn(y_pred, b_labels)
-        loss.backward()
-        optimizer.step()
+    for i in range(epochs):
+        print("Epoch " + str(i))
+        for step, batch in enumerate(train_dataloader):
+            # Load batch to GPU
+            b_input_ids, b_attn_mask, b_labels = tuple(t for t in batch)
+            model.zero_grad()
+            y_pred = model(b_input_ids, b_attn_mask)
+            loss = loss_fn(y_pred, b_labels)
+            loss.backward()
+            optimizer.step()
     print('Finished training model in %.1f sec' % ((time.time()-start)))
 
 
 X, y = preprocess('fake/train_tok.csv')
+# Serialize data into file:
+json.dump(X, open("X_fakenews.json", 'w'))
+json.dump(y, open("y_fakenews.json", 'w'))
 tokenized, masks = tokenize(X)
 model = DeBERTaTxtClassifier(pretrained_model['model_path'], pretrained_model['model_config_path'])
 train(model, tokenized, masks, y)

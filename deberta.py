@@ -116,11 +116,11 @@ class DeBERTaReconfig(torch.nn.Module):
 
 
 class DeBERTaTxtClassifier(torch.nn.Module):
-    def __init__(self, model_path, model_config_path, freeze_deberta=True):
+    def __init__(self, model_path, model_config_path, freeze_deberta=True, num_in = 768, num_hidden = 50, num_out = 2):
         super().__init__()
         self.deberta = DeBERTaReconfig(model_path, model_config_path)
-        # Specify hidden size of BERT, hidden size of our classifier, and number of labels
-        D_in, H, D_out = 768, 50, 2
+        # Specify hidden size of DeBERTa, hidden size of our classifier, and number of labels
+        D_in, H, D_out = num_in, num_hidden, num_out
 
         # Instantiate an one-layer feed-forward classifier
         self.classifier = torch.nn.Sequential(
