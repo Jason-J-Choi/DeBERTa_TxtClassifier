@@ -61,12 +61,12 @@ def preprocess(filepath, basepath = './datasets/raw/'):
         df = df.dropna()
         X = df.iloc[:,0]
         y = df.iloc[:,1]
-    if (filepath == 'ag/train_tok.csv' or 'ag/test_tok.csv'):
+    if (filepath == 'ag/train_tok.csv' or filepath == 'ag/test_tok.csv'):
         df = pd.read_csv(basepath + filepath)
         df = df.dropna()
         X = df.iloc[:,0]
         y = df.iloc[:,1]
-    if (filepath == 'yelp/train_tok.csv' or 'yelp/test_tok.csv'):
+    if (filepath == 'yelp/train_tok.csv' or filepath == 'yelp/test_tok.csv'):
         df = pd.read_csv(basepath + filepath)
         df = df.dropna()
         X = df.iloc[:,0]
@@ -90,12 +90,12 @@ def preprocess(filepath, basepath = './datasets/raw/'):
         print(df)
     
     X = X.apply(clean_text).apply(text_process)
-    df.to_csv('./outputs/X_' + filepath)
+    df.to_csv('./outputs/' + filepath)
     return X, y
 
 def tokenize(input_sentences, max_seq_len = 512):
-    tokenized_sentences = {}
-    masks = {}
+    tokenized_sentences = collections.OrderedDict()
+    masks = collections.OrderedDict()
     for key, sentence in input_sentences.items():
         tokenizer = tokenizers[vocab_type](vocab_path)
         tokens = tokenizer.tokenize(sentence)
@@ -111,7 +111,6 @@ def tokenize(input_sentences, max_seq_len = 512):
     return tokenized_sentences, masks
 
 def train(model, X_train, X_masks, Y_train):
-    X_train = collections.OrderedDict(sorted(X_train.items()))
     xlist = []
     ylist = []
     masklist = []
@@ -148,8 +147,8 @@ def train(model, X_train, X_masks, Y_train):
 
 X, y = preprocess('fake/train_tok.csv')
 # Serialize data into file:
-json.dump(X, open("X_fakenews.json", 'w'))
-json.dump(y, open("y_fakenews.json", 'w'))
+
 tokenized, masks = tokenize(X)
+json.dump(tokenized, open("./outputs/tokenized_fakenews.json", 'w'))
+json.dump(masks, open("./outputs/masks_fakenews.json", 'w'))
 model = DeBERTaTxtClassifier(pretrained_model['model_path'], pretrained_model['model_config_path'])
-train(model, tokenized, masks, y)
