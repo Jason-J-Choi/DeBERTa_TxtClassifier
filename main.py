@@ -145,10 +145,10 @@ def train(model, X_train, X_masks, Y_train):
     print('Finished training model in %.1f sec' % ((time.time()-start)))
 
 
-X, y = preprocess('fake/train_tok.csv')
+X, y = preprocess('yelp/train_tok.csv')
 # Serialize data into file:
 
 tokenized, masks = tokenize(X)
-json.dump(tokenized, open("./outputs/tokenized_fakenews.json", 'w'))
-json.dump(masks, open("./outputs/masks_fakenews.json", 'w'))
+json.dump(tokenized, open("./outputs/tokenized_yelp.json", 'w'))
+json.dump(masks, open("./outputs/masks_yelp.json", 'w'))
 model = DeBERTaTxtClassifier(pretrained_model['model_path'], pretrained_model['model_config_path'])
