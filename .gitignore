@@ -136,3 +136,5 @@ dmypy.json
 # Pyre type checker
 .pyre/
 datasets/
+outputs/
+TextFooler/counter-fitted-vectors.txt
