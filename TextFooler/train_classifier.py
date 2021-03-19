@@ -12,8 +12,8 @@ import torch.optim as optim
 from torch.autograd import Variable
 
 # from sru import *
-import dataloader
-import modules
+from . import dataloader
+from . import modules
 
 class Model(nn.Module):
     def __init__(self, embedding, hidden_size=150, depth=1, dropout=0.3, cnn=False, nclasses=2):

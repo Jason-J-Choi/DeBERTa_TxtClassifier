@@ -4,7 +4,7 @@ import sys
 embedding_path = sys.argv[1] # '/data/medg/misc/jindi/nlp/embeddings/counter-fitted-vectors.txt'
 
 embeddings = []
-with open(embedding_path, 'r') as ifile:
+with open(embedding_path, 'r', encoding="utf8") as ifile:
     for line in ifile:
         embedding = [float(num) for num in line.strip().split()[1:]]
         embeddings.append(embedding)

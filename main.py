@@ -1,7 +1,7 @@
 import os
 import pathlib
 import torch
-from DeBERTa.DeBERTa.deberta import pretrained_models, tokenizers
+from DeBERTa import deberta
 from deberta import DeBERTaTxtClassifier
 import re
 import string
@@ -12,6 +12,7 @@ from nltk.corpus import stopwords
 from nltk.stem.porter import PorterStemmer
 from nltk.stem import WordNetLemmatizer
 import time
+import math
 import collections
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 import json
@@ -22,7 +23,7 @@ lem = WordNetLemmatizer()
 file_path = pathlib.Path.cwd()
 
 pretrained_model_v2xxlarge = {
-    'model_class': pretrained_models['xxlarge-v2'],
+    'model_class':  deberta.pretrained_models['xxlarge-v2'],
     'model_path': file_path.joinpath('model', 'v2-xxlarge', 'pytorch_model.bin'),
     'model_config_path': file_path.joinpath('model', 'v2-xxlarge', 'config.json'),
     'model_vocab_path': file_path.joinpath('model', 'v2-xxlarge', 'spm.model'),
@@ -30,7 +31,7 @@ pretrained_model_v2xxlarge = {
 }
 
 pretrained_model_base = {
-    'model_class': pretrained_models['base'],
+    'model_class': deberta.pretrained_models['base'],
     'model_path': file_path.joinpath('model', 'base', 'pytorch_model.bin'),
     'model_config_path': file_path.joinpath('model', 'base', 'config.json'),
     'model_vocab_path': file_path.joinpath('model', 'base', 'bpe_encoder.bin'),
@@ -43,61 +44,110 @@ max_seq_len = 512
 vocab_path = pretrained_model['model_vocab_path']
 vocab_type = pretrained_model['model_vocab_type']
 
-def clean_text(text):
-        text = re.sub('[^a-zA-Z0-9]',' ', text)
+
+class Preprocess:
+    def __init__(self, filepath):
+        self.basepath = './datasets/raw/'
+        self.filepath = filepath
+        self.filename = os.path.basename(filepath)
+
+        self.fullpath = os.path.join(self.basepath, self.filepath)
+        self.output_base = './outputs/'
+        self.output_dir = os.path.join(self.output_base, os.path.split(filepath)[0])
+        self.output_file = os.path.join(self.output_base, filepath)
+
+        if not os.path.exists(file_path.joinpath(self.basepath).absolute()):
+            raise NotADirectoryError(self.basepath + " does not exist")
+        if not os.path.exists(file_path.joinpath(self.output_dir).absolute()):
+            raise NotADirectoryError()
+
+    def clean_text(self, text):
+        text = re.sub('[^a-zA-Z0-9]', ' ', text)
         text = re.sub('[%s]' % re.escape(string.punctuation), ' ', text)
         text = text.lower()
+        text = ' '.join(text.split())
         return text
 
-def text_process(text):
-    text = text.split()
-    text = [ps.stem(word) for word in text if not word in stopwords.words('english')]
-    text = ' '.join(text)
-    return text
+    def text_process(self, text):
+        text = text.split()
+        text = [ps.stem(word) for word in text if word not in stopwords.words('english')]
+        text = ' '.join(text)
+        return text
 
-def preprocess(filepath, basepath = './datasets/raw/'):
-    if (filepath == 'fake/train_tok.csv' or filepath == 'fake/test_tok.csv'):
-        df = pd.read_csv(basepath + filepath)
-        df = df.dropna()
-        X = df.iloc[:,0]
-        y = df.iloc[:,1]
-    if (filepath == 'ag/train_tok.csv' or 'ag/test_tok.csv'):
-        df = pd.read_csv(basepath + filepath)
-        df = df.dropna()
-        X = df.iloc[:,0]
-        y = df.iloc[:,1]
-    if (filepath == 'yelp/train_tok.csv' or 'yelp/test_tok.csv'):
-        df = pd.read_csv(basepath + filepath)
-        df = df.dropna()
-        X = df.iloc[:,0]
-        y = df.iloc[:,1]
-    if (filepath == 'mr/train.txt' or filepath == 'mr/test.txt'):
-        df = pd.read_table(basepath + filepath, header=None)
-        X = []
-        y = []
-        for i in range(len(df.index)):
-            row = df.iloc[i].to_string(index=False)
-            yval = row[1]
-            xval = row[3:]
-            X.append(xval)
-            y.append(yval)
-        X = pd.DataFrame(X)
-        y = pd.DataFrame(y)
-    if (filepath == 'imdb/train_tok.csv' or filepath == 'imdb/test_tok.csv'):
-        #error tokenizing data
-        df = pd.read_csv(basepath + filepath)
-        df = df.dropna()
-        print(df)
-    
-    X = X.apply(clean_text).apply(text_process)
-    df.to_csv('./outputs/X_' + filepath)
-    return X, y
+    def _imdb_concatenate(self, max_col, row, sentence):
+        for j in range(1, max_col, 1):
+            if not row[j] or not isinstance(row[j], str):
+                continue
+            sentence = sentence + str(row[j])
+        return sentence
 
-def tokenize(input_sentences, max_seq_len = 512):
+    def preprocess(self):
+        if not os.path.exists(self.fullpath):
+            raise AttributeError("Defined file does not exist")
+
+        text_data, classification = self._preprocessing()
+
+        try:
+            if not os.path.exists(self.output_dir):
+                os.mkdir(self.output_dir)
+            df = pd.DataFrame({'sentences': text_data, 'label': classification})
+            df.to_csv(self.output_file)
+        except:
+            print("saving didn't work")
+
+        return text_data, classification
+
+    def _preprocessing(self):
+        if self.filepath.startswith(('fake', 'ag', 'yelp')):
+            df = pd.read_csv(self.fullpath).dropna()
+            x = df.iloc[:, 0]
+            y = df.iloc[:, 1]
+            df = pd.DataFrame({'label': y})
+            df.to_csv(self.output_file)
+        elif self.filepath.startswith('mr'):
+            df = pd.read_table(self.fullpath, header=None)
+            x = []
+            y = []
+            for i in range(len(df.index)):
+                row = df.iloc[i].to_string(index=False)
+                yval = row[1]
+                xval = row[3:]
+                x.append(xval)
+                y.append(yval)
+            x = pd.DataFrame(x).iloc[:, 0]
+            y = pd.DataFrame(y).iloc[:, 1]
+        elif self.filepath.startswith('imdb'):
+            df = pd.read_csv(self.fullpath)
+            x = []
+            y = []
+            import time
+            for i in range(0, df.shape[0]):
+                row = df.iloc[i, :]
+                first_split = row[0].split(' ', 1)
+                if not len(first_split) == 2:
+                    continue
+                y.append(first_split[0])
+
+                sentence = first_split[1]
+                sentence = self._imdb_concatenate(df.shape[1], row, sentence)
+                sentence = self.clean_text(sentence)
+                sentence = self.text_process(sentence)
+                x.append(sentence)
+            x = pd.DataFrame(x).iloc[:, 0]
+            y = pd.DataFrame(y)
+        else:
+            raise TypeError("Dataset unknown")
+
+        x = x.apply(self.clean_text).apply(self.text_process)
+
+        return x, y
+
+
+def tokenize(input_sentences, max_seq_len=512):
     tokenized_sentences = {}
     masks = {}
     for key, sentence in input_sentences.items():
-        tokenizer = tokenizers[vocab_type](vocab_path)
+        tokenizer = deberta.tokenizers[vocab_type](vocab_path)
         tokens = tokenizer.tokenize(sentence)
         tokens = tokens[:max_seq_len - 2]
         tokens = ['[CLS]'] + tokens + ['[SEP]']
@@ -127,9 +177,8 @@ def train(model, X_train, X_masks, Y_train):
     train_sampler = RandomSampler(train_data)
     train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=batch_size)
     start = time.time()
-    optimizer = torch.optim.Adam(model.parameters(),
-                      lr=5e-5  
-                      )
+    optimizer = torch.optim.Adam(model.parameters(), lr=5e-5)
+
     epochs = 4
     total_steps = len(train_dataloader) * epochs
     loss_fn = torch.nn.CrossEntropyLoss()
@@ -146,10 +195,18 @@ def train(model, X_train, X_masks, Y_train):
     print('Finished training model in %.1f sec' % ((time.time()-start)))
 
 
-X, y = preprocess('fake/train_tok.csv')
-# Serialize data into file:
-json.dump(X, open("X_fakenews.json", 'w'))
-json.dump(y, open("y_fakenews.json", 'w'))
-tokenized, masks = tokenize(X)
-model = DeBERTaTxtClassifier(pretrained_model['model_path'], pretrained_model['model_config_path'])
-train(model, tokenized, masks, y)
+proproc = Preprocess('fake/train_tok.csv')
+text_data = proproc.preprocess()
+print("Done preprocessing")
+exit()
+df = pd.read_csv('./outputs/_test/train_tok.csv')
+df = df.dropna()
+print(df.iloc[0])
+#text_data = df.iloc[:, 2]
+#print(text_data[0:5])
+#tokenized, masks = tokenize(text_data)
+#json.dump(tokenized, open("X_ag.json", 'w'))
+#json.dump(masks, open("y_ag.json", 'w'))
+#print("Done tokenizing")
+# model = DeBERTaTxtClassifier(pretrained_model['model_path'], pretrained_model['model_config_path'])
+# train(model, tokenized, masks, y)

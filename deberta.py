@@ -1,9 +1,16 @@
 
 import os
 import torch
+from torch.nn import functional
+from torch.utils.data import Dataset, DataLoader, SequentialSampler, TensorDataset
 
-from DeBERTa.DeBERTa.deberta.bert import *
-from DeBERTa.DeBERTa.deberta.config import ModelConfig
+from TextFooler.attack_classification import NLIDataset_BERT
+
+
+from TextFooler.attack_classification import InputFeatures
+
+from DeBERTa.deberta.bert import *
+from DeBERTa.deberta.config import ModelConfig
 
 class DeBERTaReconfig(torch.nn.Module):
     def __init__(self, model_path, model_config_path):
@@ -115,10 +122,69 @@ class DeBERTaReconfig(torch.nn.Module):
         self.load_state_dict(current)
 
 
+class NLIDataset_DeBERTa:
+    def __init__(self, pretrained_dir, max_seq_length=128, batch_size=32):
+        self.tokenizer = None
+        self.max_seq_length = max_seq_length
+        self.batch_size = batch_size
+
+    def convert_examples_to_features(self, examples, max_seq_length, tokenizer):
+        """Loads a data file into a list of `InputBatch`s."""
+
+        features = []
+        for (ex_index, text_a) in enumerate(examples):
+            tokens_a = tokenizer.tokenize(' '.join(text_a))
+
+            # Account for [CLS] and [SEP] with "- 2"
+            if len(tokens_a) > max_seq_length - 2:
+                tokens_a = tokens_a[:(max_seq_length - 2)]
+
+            tokens = ["[CLS]"] + tokens_a + ["[SEP]"]
+            segment_ids = [0] * len(tokens)
+
+            input_ids = tokenizer.convert_tokens_to_ids(tokens)
+
+            # The mask has 1 for real tokens and 0 for padding tokens. Only real
+            # tokens are attended to.
+            input_mask = [1] * len(input_ids)
+
+            # Zero-pad up to the sequence length.
+            padding = [0] * (max_seq_length - len(input_ids))
+            input_ids += padding
+            input_mask += padding
+            segment_ids += padding
+
+            assert len(input_ids) == max_seq_length
+            assert len(input_mask) == max_seq_length
+            assert len(segment_ids) == max_seq_length
+
+            features.append(InputFeatures(input_ids=input_ids, input_mask=input_mask, segment_ids=segment_ids))
+        return features
+
+    def transform_text(self, data, batch_size=32):
+        # transform data into seq of embeddings
+        eval_features = self.convert_examples_to_features(data, self.max_seq_length, self.tokenizer)
+
+        all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
+        all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
+        all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
+        eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids)
+
+        # Run prediction for full data
+        eval_sampler = SequentialSampler(eval_data)
+        eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=batch_size)
+
+        return eval_dataloader
+
+
 class DeBERTaTxtClassifier(torch.nn.Module):
-    def __init__(self, model_path, model_config_path, freeze_deberta=True, num_in = 768, num_hidden = 50, num_out = 2):
+    def __init__(self, model_path, model_config_path, freeze_deberta=True, num_in=768, num_hidden=50, num_out=2,
+                 max_seq_length=128, batch_size=32):
         super().__init__()
         self.deberta = DeBERTaReconfig(model_path, model_config_path)
+        self.max_seq_length=max_seq_length
+        self.batch_size = batch_size
+        self.dataset = NLIDataset_DeBERTa(model_path, max_seq_length, batch_size)
         # Specify hidden size of DeBERTa, hidden size of our classifier, and number of labels
         D_in, H, D_out = num_in, num_hidden, num_out
 
@@ -148,3 +214,21 @@ class DeBERTaTxtClassifier(torch.nn.Module):
         logits = self.classifier(nextTensor)
 
         return logits
+
+    def text_pred(self, text_data, batch_size):
+        self.deberta.eval()
+        dataloader = self.dataset.transform_text(text_data, batch_size=batch_size)
+
+        probs_all = []
+        # for input_ids, input_mask, segment_ids in tqdm(dataloader, desc="Evaluating"):
+        for input_ids, input_mask, segment_ids in dataloader:
+            input_ids = input_ids.cuda()
+            input_mask = input_mask.cuda()
+            segment_ids = segment_ids.cuda()
+
+            with torch.no_grad():
+                logits = self.model(input_ids, segment_ids, input_mask)
+                probs = functional.softmax(logits, dim=-1)
+                probs_all.append(probs)
+
+        return torch.cat(probs_all, dim=0)

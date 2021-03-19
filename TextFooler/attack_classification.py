@@ -1,9 +1,9 @@
 import argparse
 import os
 import numpy as np
-import dataloader
-from train_classifier import Model
-import criteria
+from . import dataloader
+from .train_classifier import Model
+from . import criteria
 import random
 
 import tensorflow as tf
@@ -13,8 +13,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, SequentialSampler, TensorDataset
 
-from BERT.tokenization import BertTokenizer
-from BERT.modeling import BertForSequenceClassification, BertConfig
+from .BERT.tokenization import BertTokenizer
+from .BERT.modeling import BertForSequenceClassification, BertConfig
 
 
 class USE(object):
@@ -65,11 +65,7 @@ def pick_most_similar_words_batch(src_words, sim_mat, idx2word, ret_count=10, th
 
 
 class NLI_infer_BERT(nn.Module):
-    def __init__(self,
-                 pretrained_dir,
-                 nclasses,
-                 max_seq_length=128,
-                 batch_size=32):
+    def __init__(self, pretrained_dir, nclasses, max_seq_length=128, batch_size=32):
         super(NLI_infer_BERT, self).__init__()
         self.model = BertForSequenceClassification.from_pretrained(pretrained_dir, num_labels=nclasses).cuda()
 
@@ -84,7 +80,7 @@ class NLI_infer_BERT(nn.Module):
         dataloader = self.dataset.transform_text(text_data, batch_size=batch_size)
 
         probs_all = []
-        #         for input_ids, input_mask, segment_ids in tqdm(dataloader, desc="Evaluating"):
+        # for input_ids, input_mask, segment_ids in tqdm(dataloader, desc="Evaluating"):
         for input_ids, input_mask, segment_ids in dataloader:
             input_ids = input_ids.cuda()
             input_mask = input_mask.cuda()
@@ -100,7 +96,6 @@ class NLI_infer_BERT(nn.Module):
 
 class InputFeatures(object):
     """A single set of features of data."""
-
     def __init__(self, input_ids, input_mask, segment_ids):
         self.input_ids = input_ids
         self.input_mask = input_mask
@@ -117,10 +112,7 @@ class NLIDataset_BERT(Dataset):
     folder of this repository).
     """
 
-    def __init__(self,
-                 pretrained_dir,
-                 max_seq_length=128,
-                 batch_size=32):
+    def __init__(self, pretrained_dir, max_seq_length=128, batch_size=32):
         """
         Args:
             data: A dictionary containing the preprocessed premises,
@@ -170,16 +162,12 @@ class NLIDataset_BERT(Dataset):
             assert len(input_mask) == max_seq_length
             assert len(segment_ids) == max_seq_length
 
-            features.append(
-                InputFeatures(input_ids=input_ids,
-                              input_mask=input_mask,
-                              segment_ids=segment_ids))
+            features.append(InputFeatures(input_ids=input_ids, input_mask=input_mask, segment_ids=segment_ids))
         return features
 
     def transform_text(self, data, batch_size=32):
         # transform data into seq of embeddings
-        eval_features = self.convert_examples_to_features(data,
-                                                          self.max_seq_length, self.tokenizer)
+        eval_features = self.convert_examples_to_features(data, self.max_seq_length, self.tokenizer)
 
         all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
@@ -193,9 +181,42 @@ class NLIDataset_BERT(Dataset):
         return eval_dataloader
 
 
+def get_original_importance_score(text_ls, len_text, predictor, orig_label, orig_prob, orig_probs,
+                                  batch_size, num_queries):
+    leave_1_texts = [text_ls[:ii] + ['<oov>'] + text_ls[min(ii + 1, len_text):] for ii in range(len_text)]
+    leave_1_probs = predictor(leave_1_texts, batch_size=batch_size)
+    num_queries += len(leave_1_texts)
+    leave_1_probs_argmax = torch.argmax(leave_1_probs, dim=-1)
+    import_scores = (orig_prob - leave_1_probs[:, orig_label] + (leave_1_probs_argmax != orig_label).float() * (
+            leave_1_probs.max(dim=-1)[0] - torch.index_select(orig_probs, 0,
+                                                              leave_1_probs_argmax))).data.cpu().numpy()
+
+    return import_scores, num_queries, leave_1_texts
+
+
+def get_modified_importance_score(text_ls, len_text, predictor, orig_label, orig_prob, orig_probs,
+                                  batch_size, num_queries):
+    leave_2_texts = [text_ls[:ii] + ['<oov>'] + ['<oov'] + text_ls[min(ii + 1, len_text)+1:] for ii in range(len_text)]
+    leave_2_probs = predictor(leave_2_texts, batch_size=batch_size)
+    num_queries += len(leave_2_texts)
+    leave_2_probs_argmax = torch.argmax(leave_2_probs, dim=-1)
+    import_score_leave_2 = (orig_prob - leave_2_probs[:, orig_label] + (leave_2_probs_argmax != orig_label).float() * (
+        leave_2_probs.max(dim=-1)[0] - torch.index_select(orig_probs, 0, leave_2_probs_argmax))).data.cpu().numpy()
+
+    switch_2_texts = [text_ls[:ii] + [text_ls[ii+1]] + [text_ls[ii]] + text_ls[min(ii + 1, len_text)+1:]
+                      for ii in range(len_text-1)]
+    switch_2_probs = predictor(switch_2_texts, batch_size=batch_size)
+    num_queries += len(switch_2_texts)
+    switch_2_probs_argmax = torch.argmax(switch_2_probs, dim=-1)
+    import_score_switch_2 = (orig_prob - switch_2_probs[:, orig_label] + (switch_2_probs_argmax != orig_label).float() * (
+        switch_2_probs.max(dim=-1)[0] - torch.index_select(orig_probs, 0, switch_2_probs_argmax))).data.cpu().numpy()
+
+    return import_score_leave_2, import_score_switch_2, num_queries, leave_2_texts, switch_2_texts
+
+
 def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, cos_sim, sim_predictor=None,
            import_score_threshold=-1., sim_score_threshold=0.5, sim_score_window=15, synonym_num=50,
-           batch_size=32):
+           batch_size=32, deberta_modified=False):
     # first check the prediction of the original text
     orig_probs = predictor([text_ls]).squeeze()
     orig_label = torch.argmax(orig_probs)
@@ -213,15 +234,17 @@ def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, c
         pos_ls = criteria.get_pos(text_ls)
 
         # get importance score
-        leave_1_texts = [text_ls[:ii] + ['<oov>'] + text_ls[min(ii + 1, len_text):] for ii in range(len_text)]
-        leave_1_probs = predictor(leave_1_texts, batch_size=batch_size)
-        num_queries += len(leave_1_texts)
-        leave_1_probs_argmax = torch.argmax(leave_1_probs, dim=-1)
-        import_scores = (orig_prob - leave_1_probs[:, orig_label] + (leave_1_probs_argmax != orig_label).float() * (
-                    leave_1_probs.max(dim=-1)[0] - torch.index_select(orig_probs, 0,
-                                                                      leave_1_probs_argmax))).data.cpu().numpy()
+        import_scores, num_queries, leave_1_texts = get_original_importance_score(
+            text_ls, len_text, predictor, orig_label, orig_prob, orig_probs, batch_size, num_queries
+        )
 
-        # get words to perturb ranked by importance scorefor word in words_perturb
+        import_score_leave_2, import_score_switch_2, leave_2_texts, switch_2_texts = None, None, None, None
+        if deberta_modified is True:
+            import_score_leave_2, import_score_switch_2, num_queries, leave_2_texts, switch_2_texts = get_modified_importance_score(
+                text_ls, len_text, predictor, orig_label, orig_prob, orig_probs, batch_size, num_queries
+            )
+
+        # get words to perturb ranked by importance score for word in words_perturb
         words_perturb = []
         for idx, score in sorted(enumerate(import_scores), key=lambda x: x[1], reverse=True):
             try:
@@ -229,6 +252,16 @@ def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, c
                     words_perturb.append((idx, text_ls[idx]))
             except:
                 print(idx, len(text_ls), import_scores.shape, text_ls, len(leave_1_texts))
+
+        words_perturb2 = []
+        if import_score_leave_2 is not None:
+            for idx, score in sorted(enumerate(import_score_leave_2), key=lambda x: x[1], reverse=True):
+                try:
+                    if score > import_score_threshold and text_ls[idx] not in stop_words_set and text_ls[idx+1] not in stop_words_set:
+                        words_perturb2.append((idx, text_ls[idx], text_ls[idx+1]))
+                except:
+                    print(idx, len(text_ls), import_score_leave_2.shape, text_ls, len(leave_2_texts))
+        # No need to fill word perturb list for switches
 
         # find synonyms
         words_perturb_idx = [word2idx[word] for idx, word in words_perturb if word in word2idx]
@@ -239,6 +272,23 @@ def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, c
                 synonyms = synonym_words.pop(0)
                 if synonyms:
                     synonyms_all.append((idx, synonyms))
+
+        synonyms_all2 = []
+        if len(words_perturb2) > 0:
+            words_perturb2_idx = []
+            for idx, word, word2 in words_perturb2:
+                if word in word2idx and word2 in word2idx:
+                    words_perturb2_idx.append(word2idx[word])
+                    words_perturb2_idx.append(word2idx[word])
+            synonym_words2, _ = pick_most_similar_words_batch(words_perturb2_idx, cos_sim, idx2word, synonym_num, 0.5)
+            for idx, word, word2 in words_perturb2:
+                if word in word2idx and word2 in word2idx:
+                    synonyms = synonym_words2.pop(0)
+                    synonyms2 = synonym_words2.pop(0)
+                    if synonyms and synonyms2:
+                        synonyms_all2.append((idx, synonyms, synonyms2))
+        # Again, synonyms do not applied to switched list
+        # TODO feed it into rest of function
 
         # start replacing and attacking
         text_prime = text_ls[:]
@@ -289,6 +339,31 @@ def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, c
                     text_prime[idx] = synonyms[new_label_prob_argmin]
                     num_changed += 1
             text_cache = text_prime[:]
+
+        if len(synonyms_all2) > 0:
+            text_prime2 = text_ls[:]
+            text_cache2 = text_prime[:]
+            for idx, synonyms, synonyms2 in synonyms_all2:
+                new_texts = [text_prime2[:idx] + [synonym] + [synonym2] + text_prime2[min(idx + 1, len_text)+1:] for synonym in synonyms for synonym2 in synonyms2]
+                new_probs = predictor(new_texts, batch_size=batch_size)
+
+                if idx >= half_sim_score_window and len_text - idx - 1 >= half_sim_score_window:
+                    text_range_min = idx - half_sim_score_window
+                    text_range_max = idx + half_sim_score_window + 1
+                elif idx < half_sim_score_window and len_text - idx - 1 >= half_sim_score_window:
+                    text_range_min = 0
+                    text_range_max = sim_score_window
+                elif idx >= half_sim_score_window and len_text - idx - 1 < half_sim_score_window:
+                    text_range_min = len_text - sim_score_window
+                    text_range_max = len_text
+                else:
+                    text_range_min = 0
+                    text_range_max = len_text
+
+                sim_predictor.semantic_sim()[0]
+
+            # TODO NOT DONE
+
         return ' '.join(text_prime), num_changed, orig_label, torch.argmax(predictor([text_prime])), num_queries
 
 
