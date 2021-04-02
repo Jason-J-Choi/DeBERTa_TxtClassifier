@@ -15,6 +15,7 @@ from torch.autograd import Variable
 from . import dataloader
 from . import modules
 
+
 class Model(nn.Module):
     def __init__(self, embedding, hidden_size=150, depth=1, dropout=0.3, cnn=False, nclasses=2):
         super(Model, self).__init__()

@@ -16,25 +16,38 @@ from torch.utils.data import Dataset, DataLoader, SequentialSampler, TensorDatas
 from .BERT.tokenization import BertTokenizer
 from .BERT.modeling import BertForSequenceClassification, BertConfig
 
+import nltk
+from nltk.corpus import stopwords
+from nltk.stem.porter import PorterStemmer
+from nltk.stem import WordNetLemmatizer
+nltk.download('stopwords')
+nltk.download('averaged_perceptron_tagger')
+nltk.download('universal_tagset')
+
+tf.compat.v1.disable_eager_execution()
+
 
 class USE(object):
     def __init__(self, cache_path):
         super(USE, self).__init__()
         os.environ['TFHUB_CACHE_DIR'] = cache_path
-        module_url = "https://tfhub.dev/google/universal-sentence-encoder-large/3"
-        self.embed = hub.Module(module_url)
-        config = tf.ConfigProto()
+        module_url = "https://tfhub.dev/google/universal-sentence-encoder-large/4"
+        self.embed = hub.load(module_url)
+        config = tf.compat.v1.ConfigProto()
         config.gpu_options.allow_growth = True
-        self.sess = tf.Session(config=config)
+        self.sess = tf.compat.v1.Session(config=config)
         self.build_graph()
-        self.sess.run([tf.global_variables_initializer(), tf.tables_initializer()])
+        self.sess.run([tf.compat.v1.global_variables_initializer(), tf.compat.v1.tables_initializer()])
 
     def build_graph(self):
-        self.sts_input1 = tf.placeholder(tf.string, shape=(None))
-        self.sts_input2 = tf.placeholder(tf.string, shape=(None))
+        self.sts_input1 = tf.compat.v1.placeholder(tf.string, shape=(None))
+        self.sts_input2 = tf.compat.v1.placeholder(tf.string, shape=(None))
 
-        sts_encode1 = tf.nn.l2_normalize(self.embed(self.sts_input1), axis=1)
-        sts_encode2 = tf.nn.l2_normalize(self.embed(self.sts_input2), axis=1)
+        embed_sig_1 = self.embed(self.sts_input1)
+        embed_sig_2 = self.embed(self.sts_input2)
+
+        sts_encode1 = tf.nn.l2_normalize(embed_sig_1['outputs'], axis=1)
+        sts_encode2 = tf.nn.l2_normalize(embed_sig_2['outputs'], axis=1)
         self.cosine_similarities = tf.reduce_sum(tf.multiply(sts_encode1, sts_encode2), axis=1)
         clip_cosine_similarities = tf.clip_by_value(self.cosine_similarities, -1.0, 1.0)
         self.sim_scores = 1.0 - tf.acos(clip_cosine_similarities)
@@ -47,6 +60,7 @@ class USE(object):
                 self.sts_input2: sents2,
             })
         return scores
+
 
 def pick_most_similar_words_batch(src_words, sim_mat, idx2word, ret_count=10, threshold=0.):
     """
@@ -67,7 +81,7 @@ def pick_most_similar_words_batch(src_words, sim_mat, idx2word, ret_count=10, th
 class NLI_infer_BERT(nn.Module):
     def __init__(self, pretrained_dir, nclasses, max_seq_length=128, batch_size=32):
         super(NLI_infer_BERT, self).__init__()
-        self.model = BertForSequenceClassification.from_pretrained(pretrained_dir, num_labels=nclasses).cuda()
+        self.model = BertForSequenceClassification.from_pretrained(pretrained_dir, num_labels=nclasses)
 
         # construct dataset loader
         self.dataset = NLIDataset_BERT(pretrained_dir, max_seq_length=max_seq_length, batch_size=batch_size)
@@ -96,6 +110,7 @@ class NLI_infer_BERT(nn.Module):
 
 class InputFeatures(object):
     """A single set of features of data."""
+
     def __init__(self, input_ids, input_mask, segment_ids):
         self.input_ids = input_ids
         self.input_mask = input_mask
@@ -181,8 +196,7 @@ class NLIDataset_BERT(Dataset):
         return eval_dataloader
 
 
-def get_original_importance_score(text_ls, len_text, predictor, orig_label, orig_prob, orig_probs,
-                                  batch_size, num_queries):
+def get_original_importance_score(text_ls, len_text, predictor, orig_label, orig_prob, orig_probs, batch_size, num_queries):
     leave_1_texts = [text_ls[:ii] + ['<oov>'] + text_ls[min(ii + 1, len_text):] for ii in range(len_text)]
     leave_1_probs = predictor(leave_1_texts, batch_size=batch_size)
     num_queries += len(leave_1_texts)
@@ -196,34 +210,68 @@ def get_original_importance_score(text_ls, len_text, predictor, orig_label, orig
 
 def get_modified_importance_score(text_ls, len_text, predictor, orig_label, orig_prob, orig_probs,
                                   batch_size, num_queries):
-    leave_2_texts = [text_ls[:ii] + ['<oov>'] + ['<oov'] + text_ls[min(ii + 1, len_text)+1:] for ii in range(len_text)]
+    leave_2_texts = [text_ls[:ii] + ['<oov>'] + ['<oov>'] + text_ls[min(ii + 1, len_text) + 1:] for ii in
+                     range(len_text)][:-1]
     leave_2_probs = predictor(leave_2_texts, batch_size=batch_size)
     num_queries += len(leave_2_texts)
     leave_2_probs_argmax = torch.argmax(leave_2_probs, dim=-1)
     import_score_leave_2 = (orig_prob - leave_2_probs[:, orig_label] + (leave_2_probs_argmax != orig_label).float() * (
-        leave_2_probs.max(dim=-1)[0] - torch.index_select(orig_probs, 0, leave_2_probs_argmax))).data.cpu().numpy()
+            leave_2_probs.max(dim=-1)[0] - torch.index_select(orig_probs, 0, leave_2_probs_argmax))).data.cpu().numpy()
 
-    switch_2_texts = [text_ls[:ii] + [text_ls[ii+1]] + [text_ls[ii]] + text_ls[min(ii + 1, len_text)+1:]
-                      for ii in range(len_text-1)]
+    switch_2_texts = [text_ls[:ii] + [text_ls[ii + 1]] + [text_ls[ii]] + text_ls[min(ii + 1, len_text) + 1:]
+                      for ii in range(len_text - 1)]
     switch_2_probs = predictor(switch_2_texts, batch_size=batch_size)
     num_queries += len(switch_2_texts)
     switch_2_probs_argmax = torch.argmax(switch_2_probs, dim=-1)
-    import_score_switch_2 = (orig_prob - switch_2_probs[:, orig_label] + (switch_2_probs_argmax != orig_label).float() * (
-        switch_2_probs.max(dim=-1)[0] - torch.index_select(orig_probs, 0, switch_2_probs_argmax))).data.cpu().numpy()
+    import_score_switch_2 = (
+            orig_prob - switch_2_probs[:, orig_label] + (switch_2_probs_argmax != orig_label).float() * (
+            switch_2_probs.max(dim=-1)[0] - torch.index_select(orig_probs, 0,
+                                                               switch_2_probs_argmax))).data.cpu().numpy()
 
     return import_score_leave_2, import_score_switch_2, num_queries, leave_2_texts, switch_2_texts
+
+
+def get_semantics_text_ranges(idx, half_sim_score_window, sim_score_window, len_text):
+    if idx >= half_sim_score_window and len_text - idx - 1 >= half_sim_score_window:
+        text_range_min = idx - half_sim_score_window
+        text_range_max = idx + half_sim_score_window + 1
+    elif idx < half_sim_score_window and len_text - idx - 1 >= half_sim_score_window:
+        text_range_min = 0
+        text_range_max = sim_score_window
+    elif idx >= half_sim_score_window and len_text - idx - 1 < half_sim_score_window:
+        text_range_min = len_text - sim_score_window
+        text_range_max = len_text
+    else:
+        text_range_min = 0
+        text_range_max = len_text
+
+    return text_range_min, text_range_max
+
+
+def find_pair_synonyms(original_texts, pertubed_text):
+    w1, w2 = None, None
+    for i, word in enumerate(original_texts):
+        if word != pertubed_text[i]:
+            if w1 is None:
+                w1 = (pertubed_text[i], i)
+            else:
+                w2 = (pertubed_text[i], i)
+                return w1, w2
+
+    return None, None
 
 
 def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, cos_sim, sim_predictor=None,
            import_score_threshold=-1., sim_score_threshold=0.5, sim_score_window=15, synonym_num=50,
            batch_size=32, deberta_modified=False):
     # first check the prediction of the original text
-    orig_probs = predictor([text_ls]).squeeze()
+    orig_probs = predictor([text_ls], batch_size=batch_size).squeeze()
     orig_label = torch.argmax(orig_probs)
     orig_prob = orig_probs.max()
     if true_label != orig_label:
         return '', 0, orig_label, orig_label, 0
     else:
+        text_ls = text_ls.split(' ')
         len_text = len(text_ls)
         if len_text < sim_score_window:
             sim_score_threshold = 0.1  # shut down the similarity thresholding function
@@ -255,13 +303,22 @@ def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, c
 
         words_perturb2 = []
         if import_score_leave_2 is not None:
+            # the idx here is the index of the pair of words.
             for idx, score in sorted(enumerate(import_score_leave_2), key=lambda x: x[1], reverse=True):
                 try:
-                    if score > import_score_threshold and text_ls[idx] not in stop_words_set and text_ls[idx+1] not in stop_words_set:
-                        words_perturb2.append((idx, text_ls[idx], text_ls[idx+1]))
+                    if score > import_score_threshold and text_ls[idx] not in stop_words_set and text_ls[idx + 1] not in stop_words_set:
+                        words_perturb2.append((idx, text_ls[idx], text_ls[idx + 1]))
                 except:
                     print(idx, len(text_ls), import_score_leave_2.shape, text_ls, len(leave_2_texts))
-        # No need to fill word perturb list for switches
+
+        words_switched = []
+        if import_score_switch_2 is not None:
+            for idx, score in sorted(enumerate(import_score_switch_2), key=lambda x: x[1], reverse=True):
+                try:
+                    if score > import_score_threshold and text_ls[idx] not in stop_words_set and text_ls[idx + 1] not in stop_words_set:
+                        words_switched.append((idx, text_ls[idx], text_ls[idx + 1]))
+                except:
+                    print(idx, len(text_ls), import_score_switch_2.shape, text_ls, len(switch_2_texts))
 
         # find synonyms
         words_perturb_idx = [word2idx[word] for idx, word in words_perturb if word in word2idx]
@@ -279,7 +336,7 @@ def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, c
             for idx, word, word2 in words_perturb2:
                 if word in word2idx and word2 in word2idx:
                     words_perturb2_idx.append(word2idx[word])
-                    words_perturb2_idx.append(word2idx[word])
+                    words_perturb2_idx.append(word2idx[word2])
             synonym_words2, _ = pick_most_similar_words_batch(words_perturb2_idx, cos_sim, idx2word, synonym_num, 0.5)
             for idx, word, word2 in words_perturb2:
                 if word in word2idx and word2 in word2idx:
@@ -287,37 +344,38 @@ def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, c
                     synonyms2 = synonym_words2.pop(0)
                     if synonyms and synonyms2:
                         synonyms_all2.append((idx, synonyms, synonyms2))
-        # Again, synonyms do not applied to switched list
-        # TODO feed it into rest of function
+
+        switched_words = [(idx, word, word2) for idx, word, word2 in words_switched]
 
         # start replacing and attacking
         text_prime = text_ls[:]
+        text_prime2 = text_ls[:]
+        text_prime3 = text_ls[:]
         text_cache = text_prime[:]
+        text_cache2 = text_prime2[:]
         num_changed = 0
-        for idx, synonyms in synonyms_all:
+        attack_type = 1  # alternating between 1, 2, and 3 as single substitution, pair substitution, and pair switch respectively
+        # len(synonyms_all2) and len(switch_words) is len(synonyms_all)-1 the way it currently is
+        for (idx, synonyms), (idx2, synonyms2_1, synonyms2_2), (idx3, switch_1, switch_2) in zip(synonyms_all, synonyms_all2, switched_words):
+            attack_type = 1
             new_texts = [text_prime[:idx] + [synonym] + text_prime[min(idx + 1, len_text):] for synonym in synonyms]
-            new_probs = predictor(new_texts, batch_size=batch_size)
+            new_probs = predictor([' '.join(nt) for nt in new_texts], batch_size=batch_size)
 
             # compute semantic similarity
-            if idx >= half_sim_score_window and len_text - idx - 1 >= half_sim_score_window:
-                text_range_min = idx - half_sim_score_window
-                text_range_max = idx + half_sim_score_window + 1
-            elif idx < half_sim_score_window and len_text - idx - 1 >= half_sim_score_window:
-                text_range_min = 0
-                text_range_max = sim_score_window
-            elif idx >= half_sim_score_window and len_text - idx - 1 < half_sim_score_window:
-                text_range_min = len_text - sim_score_window
-                text_range_max = len_text
-            else:
-                text_range_min = 0
-                text_range_max = len_text
-            semantic_sims = \
-            sim_predictor.semantic_sim([' '.join(text_cache[text_range_min:text_range_max])] * len(new_texts),
-                                       list(map(lambda x: ' '.join(x[text_range_min:text_range_max]), new_texts)))[0]
+            text_range_min, text_range_max = get_semantics_text_ranges(
+                idx=idx, half_sim_score_window=half_sim_score_window, sim_score_window=sim_score_window,
+                len_text=len_text
+            )
+            semantic_sims = sim_predictor.semantic_sim(
+                [' '.join(text_cache[text_range_min:text_range_max])] * len(new_texts),
+                list(map(lambda x: ' '.join(x[text_range_min:text_range_max]), new_texts))
+            )[0]
 
             num_queries += len(new_texts)
             if len(new_probs.shape) < 2:
                 new_probs = new_probs.unsqueeze(0)
+
+            # using cpu here not gpu
             new_probs_mask = (orig_label != torch.argmax(new_probs, dim=-1)).data.cpu().numpy()
             # prevent bad synonyms
             new_probs_mask *= (semantic_sims >= sim_score_threshold)
@@ -327,51 +385,118 @@ def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, c
             pos_mask = np.array(criteria.pos_filter(pos_ls[idx], synonyms_pos_ls))
             new_probs_mask *= pos_mask
 
+            # if successfully alter prediction
             if np.sum(new_probs_mask) > 0:
                 text_prime[idx] = synonyms[(new_probs_mask * semantic_sims).argmax()]
                 num_changed += 1
                 break
             else:
+                # select word with least confidence score of label y as best replacement and reset for single substitution
                 new_label_probs = new_probs[:, orig_label] + torch.from_numpy(
-                        (semantic_sims < sim_score_threshold) + (1 - pos_mask).astype(float)).float().cuda()
+                    (semantic_sims < sim_score_threshold) + (1 - pos_mask).astype(float)).float()
                 new_label_prob_min, new_label_prob_argmin = torch.min(new_label_probs, dim=-1)
                 if new_label_prob_min < orig_prob:
                     text_prime[idx] = synonyms[new_label_prob_argmin]
                     num_changed += 1
+
+            # instead of starting back, compute for pair substitution and switch
+            # the single substitution was calculated first because it would provide the lesser perturbation ratio
+            # pair switching will always only perturb 2 words so it will go next
+            # and pair substitution last as it would potentially have the highest perturbation ratio
+
+            # starting pair switch attack
+            attack_type = 3
+            new_text = [text_prime3[:idx3] + [switch_2] + [switch_1] + text_prime3[min(idx3 + 1, len_text) + 1:]][0]
+            new_text_concat = [' '.join(new_text)]
+            new_prob = predictor(new_text_concat, batch_size=batch_size)
+            text_range_min, text_range_max = get_semantics_text_ranges(
+                idx=idx3, half_sim_score_window=half_sim_score_window, sim_score_window=sim_score_window,
+                len_text=len_text
+            )
+            semantic_sim = sim_predictor.semantic_sim([' '.join(text_prime2)], new_text_concat)[0]
+            num_queries += 1
+            if len(new_prob.shape) < 2:
+                new_prob = new_prob.unsqueeze(0)
+            new_prob_mask = (orig_label != torch.argmax(new_prob, dim=-1)).data.cpu().numpy()
+            new_prob_mask *= (semantic_sim >= sim_score_threshold)
+            if len(new_text) > 10:
+                synonyms_pos_ls = [criteria.get_pos(new_text[max(idx3 - 4, 0):idx3 + 5])[min(4, idx3)]]
+            else:
+                synonyms_pos_ls = [criteria.get_pos(new_text)[idx3]]
+            pos_mask = np.array(criteria.pos_filter(pos_ls[idx3], synonyms_pos_ls))
+            new_prob_mask *= pos_mask
+
+            if np.sum(new_prob_mask) > 0:
+                text_prime3[idx3] = switch_2
+                text_prime3[idx3+1] = switch_1
+                num_changed += 1
+                break
+            else:
+                new_label_prob = new_prob[:, orig_label] + torch.from_numpy(
+                    (semantic_sim < sim_score_threshold) + (1 - pos_mask).astype(float)).float()
+                new_label_prob_min, new_label_prob_argmin = torch.min(new_label_prob, dim=-1)
+                if new_label_prob_min < orig_prob:
+                    # text_prime3 change omitted as it shouldn't be replacing
+                    num_changed += 1
+
+            # starting pair substitution attack
+            attack_type = 2
+            new_texts = [text_prime2[:idx2] + [synonym1] + [synonym2] + text_prime2[min(idx2 + 1, len_text) + 1:] for
+                         synonym1 in synonyms2_1 for synonym2 in synonyms2_2][:-1]
+            new_probs = predictor([' '.join(nt) for nt in new_texts], batch_size=batch_size)
+            text_range_min, text_range_max = get_semantics_text_ranges(
+                idx=idx2, half_sim_score_window=half_sim_score_window, sim_score_window=sim_score_window,
+                len_text=len_text
+            )
+            semantic_sims = sim_predictor.semantic_sim(
+                [' '.join(text_cache2[text_range_min:text_range_max])] * len(new_texts),
+                list(map(lambda x: ' '.join(x[text_range_min:text_range_max]), new_texts))
+            )[0]
+            num_queries += len(new_texts)
+            if len(new_probs.shape) < 2:
+                new_probs = new_probs.unsqueeze(0)
+            # using cpu here not gpu
+            new_probs_mask = (orig_label != torch.argmax(new_probs, dim=-1)).data.cpu().numpy()
+            new_probs_mask *= (semantic_sims >= sim_score_threshold)
+            synonyms_pos_ls = [criteria.get_pos(new_text[max(idx2 - 4, 0):idx2 + 5])[min(4, idx2)]
+                               if len(new_text) > 10 else criteria.get_pos(new_text)[idx2] for new_text in new_texts]
+            pos_mask = np.array(criteria.pos_filter(pos_ls[idx2], synonyms_pos_ls))
+            new_probs_mask *= pos_mask
+
+            # if successfully alter prediction for pair substitution
+            if np.sum(new_probs_mask) > 0:
+                word1, word2 = find_pair_synonyms(text_prime2, new_texts[(new_probs_mask * semantic_sims).argmax()])
+                text_prime2[idx2] = word1[0]
+                text_prime2[idx2+1] = word2[0]
+                num_changed += 1
+                break
+            else:
+                new_label_probs = new_probs[:, orig_label] + torch.from_numpy(
+                    (semantic_sims < sim_score_threshold) + (1 - pos_mask).astype(float)).float()
+                new_label_prob_min, new_label_prob_argmin = torch.min(new_label_probs, dim=-1)
+                if new_label_prob_min < orig_prob:
+                    word1, word2 = find_pair_synonyms(text_prime2, new_texts[new_label_prob_argmin])
+                    text_prime2[idx2] = word1[0]
+                    text_prime2[idx2+1] = word2[0]
+                    num_changed += 1
+
             text_cache = text_prime[:]
+            text_cache2 = text_prime2[:]
 
-        if len(synonyms_all2) > 0:
-            text_prime2 = text_ls[:]
-            text_cache2 = text_prime[:]
-            for idx, synonyms, synonyms2 in synonyms_all2:
-                new_texts = [text_prime2[:idx] + [synonym] + [synonym2] + text_prime2[min(idx + 1, len_text)+1:] for synonym in synonyms for synonym2 in synonyms2]
-                new_probs = predictor(new_texts, batch_size=batch_size)
+        if attack_type == 2:
+            text_prime = text_prime2
+        elif attack_type == 3:
+            text_prime = text_prime3
 
-                if idx >= half_sim_score_window and len_text - idx - 1 >= half_sim_score_window:
-                    text_range_min = idx - half_sim_score_window
-                    text_range_max = idx + half_sim_score_window + 1
-                elif idx < half_sim_score_window and len_text - idx - 1 >= half_sim_score_window:
-                    text_range_min = 0
-                    text_range_max = sim_score_window
-                elif idx >= half_sim_score_window and len_text - idx - 1 < half_sim_score_window:
-                    text_range_min = len_text - sim_score_window
-                    text_range_max = len_text
-                else:
-                    text_range_min = 0
-                    text_range_max = len_text
-
-                sim_predictor.semantic_sim()[0]
-
-            # TODO NOT DONE
-
-        return ' '.join(text_prime), num_changed, orig_label, torch.argmax(predictor([text_prime])), num_queries
+        return ' '.join(text_prime), num_changed, orig_label,\
+               torch.argmax(predictor([text_prime], batch_size=batch_size)), num_queries
 
 
 def random_attack(text_ls, true_label, predictor, perturb_ratio, stop_words_set, word2idx, idx2word, cos_sim,
                   sim_predictor=None, import_score_threshold=-1., sim_score_threshold=0.5, sim_score_window=15,
                   synonym_num=50, batch_size=32):
     # first check the prediction of the original text
-    orig_probs = predictor([text_ls]).squeeze()
+    orig_probs = predictor([text_ls], batch_size=batch_size).squeeze()
     orig_label = torch.argmax(orig_probs)
     orig_prob = orig_probs.max()
     if true_label != orig_label:
@@ -386,44 +511,68 @@ def random_attack(text_ls, true_label, predictor, perturb_ratio, stop_words_set,
         # get the pos and verb tense info
         pos_ls = criteria.get_pos(text_ls)
 
+        # randomly pick a attack type (single synonym substitution, pair synonym substitution, pair switch)
+        attack_type = random.sample([1, 2, 3], 1)
+
         # randomly get perturbed words
-        perturb_idxes = random.sample(range(len_text), int(len_text * perturb_ratio))
-        words_perturb = [(idx, text_ls[idx]) for idx in perturb_idxes]
+        if attack_type == 1:
+            perturb_idxes = random.sample(range(len_text), int(len_text * perturb_ratio))
+            words_perturb = [(idx, text_ls[idx]) for idx in perturb_idxes]
+        elif attack_type == 2 or attack_type == 3:
+            perturb_idxes = random.sample(range(len_text), int(len_text-1 * perturb_ratio))
+            words_perturb = [(idx, text_ls[idx], text_ls[idx+1]) for idx in perturb_idxes]
+
 
         # find synonyms
-        words_perturb_idx = [word2idx[word] for idx, word in words_perturb if word in word2idx]
-        synonym_words, _ = pick_most_similar_words_batch(words_perturb_idx, cos_sim, idx2word, synonym_num, 0.5)
         synonyms_all = []
-        for idx, word in words_perturb:
-            if word in word2idx:
-                synonyms = synonym_words.pop(0)
-                if synonyms:
-                    synonyms_all.append((idx, synonyms))
+        if attack_type == 1:
+            words_perturb_idx = [word2idx[word] for idx, word in words_perturb if word in word2idx]
+            synonym_words, _ = pick_most_similar_words_batch(words_perturb_idx, cos_sim, idx2word, synonym_num, 0.5)
+            for idx, word in words_perturb:
+                if word in word2idx:
+                    synonyms = synonym_words.pop(0)
+                    if synonyms:
+                        synonyms_all.append((idx, synonyms, '__ignore__'))
+        elif attack_type == 2:
+            words_perturb2_idx = []
+            for idx, word, word2 in words_perturb:
+                if word in word2idx and word2 in word2idx:
+                    words_perturb2_idx.append(word2idx[word])
+                    words_perturb2_idx.append(word2idx[word2])
+            synonym_words2, _ = pick_most_similar_words_batch(words_perturb2_idx, cos_sim, idx2word, synonym_num, 0.5)
+            for idx, word, word2 in words_perturb:
+                if word in word2idx and word2 in word2idx:
+                    synonyms = synonym_words2.pop(0)
+                    synonyms2 = synonym_words2.pop(0)
+                    if synonyms and synonyms2:
+                        synonyms_all.append((idx, synonyms, synonyms2))
+        elif attack_type == 3:
+            # this is switched_words in attack()
+            synonyms_all = [(idx, word, word2) for idx, word, word2 in words_perturb]
 
         # start replacing and attacking
         text_prime = text_ls[:]
         text_cache = text_prime[:]
         num_changed = 0
-        for idx, synonyms in synonyms_all:
-            new_texts = [text_prime[:idx] + [synonym] + text_prime[min(idx + 1, len_text):] for synonym in synonyms]
+        for idx, synonyms, synonyms2 in synonyms_all:
+            if attack_type == 1:
+                new_texts = [text_prime[:idx] + [synonym] + text_prime[min(idx + 1, len_text):] for synonym in synonyms]
+            elif attack_type == 2:
+                new_texts = [text_prime[:idx] + [synonym1] + [synonym2] + text_prime[min(idx + 1, len_text) + 1:] for
+                         synonym1 in synonyms for synonym2 in synonyms2][:-1]
+            elif attack_type == 3:
+                new_texts = [text_prime[:idx] + [synonyms2] + [synonyms] + text_prime[min(idx + 1, len_text) + 1:]]
+
             new_probs = predictor(new_texts, batch_size=batch_size)
 
-            # compute semantic similarity
-            if idx >= half_sim_score_window and len_text - idx - 1 >= half_sim_score_window:
-                text_range_min = idx - half_sim_score_window
-                text_range_max = idx + half_sim_score_window + 1
-            elif idx < half_sim_score_window and len_text - idx - 1 >= half_sim_score_window:
-                text_range_min = 0
-                text_range_max = sim_score_window
-            elif idx >= half_sim_score_window and len_text - idx - 1 < half_sim_score_window:
-                text_range_min = len_text - sim_score_window
-                text_range_max = len_text
-            else:
-                text_range_min = 0
-                text_range_max = len_text
-            semantic_sims = \
-            sim_predictor.semantic_sim([' '.join(text_cache[text_range_min:text_range_max])] * len(new_texts),
-                                       list(map(lambda x: ' '.join(x[text_range_min:text_range_max]), new_texts)))[0]
+            text_range_min, text_range_max = get_semantics_text_ranges(
+                idx=idx, half_sim_score_window=half_sim_score_window, sim_score_window=sim_score_window,
+                len_text=len_text
+            )
+            semantic_sims = sim_predictor.semantic_sim(
+                [' '.join(text_cache[text_range_min:text_range_max])] * len(new_texts),
+                list(map(lambda x: ' '.join(x[text_range_min:text_range_max]), new_texts))
+            )[0]
 
             num_queries += len(new_texts)
             if len(new_probs.shape) < 2:
@@ -443,10 +592,11 @@ def random_attack(text_ls, true_label, predictor, perturb_ratio, stop_words_set,
                 break
             else:
                 new_label_probs = new_probs[:, orig_label] + torch.from_numpy(
-                        (semantic_sims < sim_score_threshold) + (1 - pos_mask).astype(float)).float().cuda()
+                    (semantic_sims < sim_score_threshold) + (1 - pos_mask).astype(float)).float()
                 new_label_prob_min, new_label_prob_argmin = torch.min(new_label_probs, dim=-1)
                 if new_label_prob_min < orig_prob:
-                    text_prime[idx] = synonyms[new_label_prob_argmin]
+                    if attack_type != 3:
+                        text_prime[idx] = synonyms[new_label_prob_argmin]
                     num_changed += 1
             text_cache = text_prime[:]
         return ' '.join(text_prime), num_changed, orig_label, torch.argmax(predictor([text_prime])), num_queries
@@ -539,7 +689,7 @@ def main():
     # get data to attack
     texts, labels = dataloader.read_corpus(args.dataset_path)
     data = list(zip(texts, labels))
-    data = data[:args.data_size] # choose how many samples for adversary
+    data = data[:args.data_size]  # choose how many samples for adversary
     print("Data import finished!")
 
     # construct the model
@@ -611,12 +761,12 @@ def main():
         if args.perturb_ratio > 0.:
             new_text, num_changed, orig_label, \
             new_label, num_queries = random_attack(text, true_label, predictor, args.perturb_ratio, stop_words_set,
-                                                    word2idx, idx2word, cos_sim, sim_predictor=use,
-                                                    sim_score_threshold=args.sim_score_threshold,
-                                                    import_score_threshold=args.import_score_threshold,
-                                                    sim_score_window=args.sim_score_window,
-                                                    synonym_num=args.synonym_num,
-                                                    batch_size=args.batch_size)
+                                                   word2idx, idx2word, cos_sim, sim_predictor=use,
+                                                   sim_score_threshold=args.sim_score_threshold,
+                                                   import_score_threshold=args.import_score_threshold,
+                                                   sim_score_window=args.sim_score_window,
+                                                   synonym_num=args.synonym_num,
+                                                   batch_size=args.batch_size)
         else:
             new_text, num_changed, orig_label, \
             new_label, num_queries = attack(text, true_label, predictor, stop_words_set,
@@ -645,16 +795,18 @@ def main():
 
     message = 'For target model {}: original accuracy: {:.3f}%, adv accuracy: {:.3f}%, ' \
               'avg changed rate: {:.3f}%, num of queries: {:.1f}\n'.format(args.target_model,
-                                                                     (1-orig_failures/1000)*100,
-                                                                     (1-adv_failures/1000)*100,
-                                                                     np.mean(changed_rates)*100,
-                                                                     np.mean(nums_queries))
+                                                                           (1 - orig_failures / 1000) * 100,
+                                                                           (1 - adv_failures / 1000) * 100,
+                                                                           np.mean(changed_rates) * 100,
+                                                                           np.mean(nums_queries))
     print(message)
     log_file.write(message)
 
     with open(os.path.join(args.output_dir, 'adversaries.txt'), 'w') as ofile:
         for orig_text, adv_text, true_label, new_label in zip(orig_texts, adv_texts, true_labels, new_labels):
-            ofile.write('orig sent ({}):\t{}\nadv sent ({}):\t{}\n\n'.format(true_label, orig_text, new_label, adv_text))
+            ofile.write(
+                'orig sent ({}):\t{}\nadv sent ({}):\t{}\n\n'.format(true_label, orig_text, new_label, adv_text))
+
 
 if __name__ == "__main__":
     main()

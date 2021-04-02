@@ -2,7 +2,7 @@ import os
 import pathlib
 import torch
 from DeBERTa import deberta
-from deberta import DeBERTaTxtClassifier
+#from deberta import DeBERTaTxtClassifier
 import re
 import string
 import numpy as np 
@@ -195,18 +195,18 @@ def train(model, X_train, X_masks, Y_train):
     print('Finished training model in %.1f sec' % ((time.time()-start)))
 
 
-proproc = Preprocess('fake/train_tok.csv')
-text_data = proproc.preprocess()
-print("Done preprocessing")
-exit()
-df = pd.read_csv('./outputs/_test/train_tok.csv')
+#proproc = Preprocess('ag/train_tok.csv')
+#text_data = proproc.preprocess()
+#print("Done preprocessing")
+
+df = pd.read_csv('./outputs/ag/train_tok.csv')
 df = df.dropna()
-print(df.iloc[0])
-#text_data = df.iloc[:, 2]
-#print(text_data[0:5])
-#tokenized, masks = tokenize(text_data)
-#json.dump(tokenized, open("X_ag.json", 'w'))
-#json.dump(masks, open("y_ag.json", 'w'))
-#print("Done tokenizing")
+#print(df.iloc[0])
+text_data = df.iloc[:, 1]
+print(text_data[0:5])
+tokenized, masks = tokenize(text_data)
+json.dump(tokenized, open("X_ag.json", 'w'))
+json.dump(masks, open("y_ag.json", 'w'))
+print("Done tokenizing")
 # model = DeBERTaTxtClassifier(pretrained_model['model_path'], pretrained_model['model_config_path'])
 # train(model, tokenized, masks, y)

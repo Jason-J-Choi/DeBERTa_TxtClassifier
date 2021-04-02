@@ -17,13 +17,13 @@ from torch.utils.data import Dataset, DataLoader, SequentialSampler, TensorDatas
 
 from TextFooler.attack_classification import USE, pick_most_similar_words_batch, InputFeatures, NLI_infer_BERT, \
     NLIDataset_BERT, attack, random_attack
-from deberta import DeBERTaTxtClassifier
+from deberta import DeBERTaTxtClassifier, NLI_infer_Deberta
 
 
 def read_datasets(path, MR=True, encoding='utf8', shuffle=False):
     df = pd.read_csv(path)
-    data = df.iloc[:, 1].tolist()
-    labels = df.iloc[:, 2].tolist()
+    data = df.iloc[:, 2].tolist()
+    labels = df.iloc[:, 1].tolist()
     labels = [i-0 for i in labels]
     # with open(path, encoding=encoding) as fin:
     #     for line in fin:
@@ -59,7 +59,7 @@ def main():
                         help="the deberta config file path")
     parser.add_argument("--nclasses",
                         type=int,
-                        default=2,
+                        default=4,
                         help="How many classes for classification.")
     parser.add_argument("--target_model",
                         type=str,
@@ -142,6 +142,7 @@ def main():
 
     # construct the model
     print("Building Model...")
+    deberta_modified = False
     if args.target_model == 'wordLSTM':
         model = Model(args.word_embeddings_path, nclasses=args.nclasses).cuda()
         checkpoint = torch.load(args.target_model_path, map_location='cuda:0')
@@ -153,7 +154,8 @@ def main():
     elif args.target_model == 'bert':
         model = NLI_infer_BERT(args.target_model_path, nclasses=args.nclasses, max_seq_length=args.max_seq_length)
     elif args.target_model == 'deberta':
-        model = DeBERTaTxtClassifier(args.target_model_path, args.config_path, max_seq_length=args.max_seq_length)
+        model = NLI_infer_Deberta(args.target_model_path, args.config_path, max_seq_length=args.max_seq_length)
+        deberta_modified = True
     else:
         raise LookupError("The inputted target model does not exist")
     predictor = model.text_pred
@@ -204,7 +206,6 @@ def main():
     true_labels = []
     new_labels = []
     log_file = open(os.path.join(args.output_dir, 'results_log'), 'a')
-    exit()
 
     stop_words_set = criteria.get_stopwords()
     print('Start attacking!')
@@ -228,7 +229,7 @@ def main():
                                             import_score_threshold=args.import_score_threshold,
                                             sim_score_window=args.sim_score_window,
                                             synonym_num=args.synonym_num,
-                                            batch_size=args.batch_size)
+                                            batch_size=args.batch_size, deberta_modified=deberta_modified)
 
         if true_label != orig_label:
             orig_failures += 1
