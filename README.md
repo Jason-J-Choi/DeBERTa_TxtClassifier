@@ -2,6 +2,8 @@
 
 This repository is a purely academic implementation in determining the robustness of [ **DeBERTa**](https://arxiv.org/abs/2006.03654) in its ability to perform text classification from the [ **TextFooler**](https://arxiv.org/abs/1907.11932) adversarial generator.
 
+Additionally modified TextFooler adversarial generator to consider for DeBERTa's disentangled attention by switching location of pairs of words and applying pair-wise synonym substition with adherence to original TextFooler's semantics requirements.
+
 Credits of original development of DeBERTa and TextFooler goes to their respective authors
 
 ## Attributes
