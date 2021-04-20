@@ -1,5 +1,6 @@
 
 import os
+from settings import *
 import pathlib
 
 from collections import OrderedDict, Mapping, Sequence
@@ -14,38 +15,49 @@ from TextFooler.attack_classification import InputFeatures
 from DeBERTa import deberta
 from DeBERTa.deberta.bert import *
 from DeBERTa.deberta.config import ModelConfig
+from transformers import DebertaTokenizer, DebertaForSequenceClassification, DebertaV2ForSequenceClassification
 
 
-file_path = pathlib.Path.cwd()
+class DeBERTaPretrainedModel:
+    def __init__(self, model_class):
+        self.max_seq_len = 512
+        self.model_class_name = model_class
+        if model_class == 'base':
+            self.model_class = self._get_base_model_attrs()
+        elif model_class == 'xxlarge-v2':
+            self.model_class = self._get_xxlarge_model_attrs()
+        else:
+            raise NameError("Currently only supports 'base' and 'xxlarge-v2' type DeBERTa models")
 
+    def _get_base_model_attrs(self):
+        model_attrs = {
+            'model_class': deberta.pretrained_models['base'],
+            'model_path': os.path.join('model', 'base', 'pytorch_model.bin'),
+            'model_config_path': os.path.join('model', 'base', 'config.json'),
+            'model_vocab_path': os.path.join('model', 'base', 'bpe_encoder.bin'),
+            'model_vocab_type': 'gpt2',
+            'model_d_in': 768,
+            'pretrain_key': 'microsoft/deberta-base',
+        }
+        return model_attrs
 
-pretrained_model_v2xxlarge = {
-    'model_class':  deberta.pretrained_models['xxlarge-v2'],
-    'model_path': file_path.joinpath('model', 'v2-xxlarge', 'pytorch_model.bin'),
-    'model_config_path': file_path.joinpath('model', 'v2-xxlarge', 'config.json'),
-    'model_vocab_path': file_path.joinpath('model', 'v2-xxlarge', 'spm.model'),
-    'model_vocab_type': 'spm'
-}
-
-pretrained_model_base = {
-    'model_class': deberta.pretrained_models['base'],
-    'model_path': file_path.joinpath('model', 'base', 'pytorch_model.bin'),
-    'model_config_path': file_path.joinpath('model', 'base', 'config.json'),
-    'model_vocab_path': file_path.joinpath('model', 'base', 'bpe_encoder.bin'),
-    'model_vocab_type': 'gpt2'
-}
-
-
-pretrained_model = pretrained_model_base
-max_seq_len = 512
-vocab_path = pretrained_model['model_vocab_path']
-vocab_type = pretrained_model['model_vocab_type']
+    def _get_xxlarge_model_attrs(self):
+        model_attrs = {
+            'model_class':  deberta.pretrained_models['xxlarge-v2'],
+            'model_path': os.path.join('model', 'v2-xxlarge', 'pytorch_model.bin'),
+            'model_config_path': os.path.join('model', 'v2-xxlarge', 'model_config.json'),
+            'model_vocab_path': os.path.join('model', 'v2-xxlarge', 'spm.model'),
+            'model_vocab_type': 'spm',
+            'model_d_in': 1536,
+            'pretrain_key': 'microsoft/deberta-xxlarge-v2',
+        }
+        return model_attrs
 
 
 class DeBERTaReconfig(torch.nn.Module):
     def __init__(self, model_path, model_config_path):
         super().__init__()
-        state = torch.load(model_path, map_location='cpu')
+        state = torch.load(model_path, map_location=device_name)
         if 'config' in state:
             config = ModelConfig.from_dict(state['config'])
         else:
@@ -144,16 +156,13 @@ class DeBERTaReconfig(torch.nn.Module):
             return c[0]
 
         current = self.state_dict()
-        print('needs to be (state_dict post BERT config): ' + str(len(current)))
-        print('is (model state): ' + str(len(state.keys())))
-        # TODO: figure out why the layers aren't the same. skipping for now.
-        #for c in current.keys():
-        #    current[c] = state[key_match(c, state.keys())]
         self.load_state_dict(current)
 
 
 class NLIDataset_DeBERTa:
-    def __init__(self, pretrained_dir, max_seq_length=128, batch_size=32):
+    def __init__(self, pretrained_dir, pretrained_model, max_seq_length=512, batch_size=32):
+        vocab_path = pretrained_model.model_class['model_vocab_path']
+        vocab_type = pretrained_model.model_class['model_vocab_type']
         self.tokenizer = deberta.tokenizers[vocab_type](vocab_path)
         self.max_seq_length = max_seq_length
         self.batch_size = batch_size
@@ -163,7 +172,10 @@ class NLIDataset_DeBERTa:
 
         features = []
         for (ex_index, text_a) in enumerate(examples):
-            tokens_a = tokenizer.tokenize(' '.join(text_a))
+            try:
+                tokens_a = tokenizer.tokenize(text_a)
+            except:
+                tokens_a = tokenizer.tokenize(' '.join(text_a))
 
             # Account for [CLS] and [SEP] with "- 2"
             if len(tokens_a) > max_seq_length - 2:
@@ -179,10 +191,13 @@ class NLIDataset_DeBERTa:
             input_mask = [1] * len(input_ids)
 
             # Zero-pad up to the sequence length.
-            padding = [0] * (max_seq_length - len(input_ids))
-            input_ids += padding
-            input_mask += padding
-            segment_ids += padding
+            #padding = [0] * (max_seq_length - len(input_ids))
+            #input_ids += padding
+            #input_mask += padding
+            paddings = self.max_seq_length - len(input_ids)
+            input_ids = input_ids + [0] * paddings
+            input_mask = input_mask + [0] * paddings
+            segment_ids += [0] * paddings
 
             assert len(input_ids) == max_seq_length
             assert len(input_mask) == max_seq_length
@@ -208,63 +223,59 @@ class NLIDataset_DeBERTa:
 
 
 class DeBERTaTxtClassifier(torch.nn.Module):
-    def __init__(self, model_path, model_config_path, freeze_deberta=True, num_in=768, num_hidden=50, num_out=2,
-                 max_seq_length=128, batch_size=32):
+    def __init__(self, pretrained_model, model_path, model_config_path, freeze_deberta=True,
+                 max_seq_length=512, batch_size=32, num_labels=2):
         super().__init__()
-        self.model = DeBERTaReconfig(model_path, model_config_path)
+        if pretrained_model.model_class_name == 'base':
+            self.model = DebertaForSequenceClassification.from_pretrained(
+                pretrained_model.model_class['pretrain_key'], num_labels=num_labels)
+        elif pretrained_model.model_class_name == 'xxlarge-v2':
+            self.model = DebertaV2ForSequenceClassification.from_pretrained(
+                pretrained_model.model_class['pretrain_key'], num_labels=num_labels)
+
+        self.tokenizer = DebertaTokenizer.from_pretrained(pretrained_model.model_class['pretrain_key'])
         self.max_seq_length = max_seq_length
         self.batch_size = batch_size
-        self.dataset = NLIDataset_DeBERTa(model_path, max_seq_length, batch_size)
-        # Specify hidden size of DeBERTa, hidden size of our classifier, and number of labels
-        D_in, H, D_out = num_in, num_hidden, num_out
-
-        # Instantiate an one-layer feed-forward classifier
-        self.classifier = torch.nn.Sequential(
-            torch.nn.Linear(D_in, H),
-            torch.nn.ReLU(),
-            #torch.nn.Dropout(0.5),
-            torch.nn.Linear(H, D_out)
-        )
+        self.dataset = NLIDataset_DeBERTa(model_path, pretrained_model, max_seq_length, batch_size)
 
         if freeze_deberta:
             for param in self.model.parameters():
                 param.requires_grad = False
+            for param in self.model.base_model.parameters():
+                param.requires_grad = False
         
-    def forward(self, input_ids, attention_mask):
-        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, output_all_encoded_layers=False)
-        nextTensor = torch.empty(len(input_ids), 768, dtype=torch.float)
-        # Extract the last hidden state of the token `[CLS]` for classification task
-        last_hidden_state_cls = outputs[0]
-        
-        for i in range(len(last_hidden_state_cls)):
-            nextTensor[i] = last_hidden_state_cls[i][0]
-        # Feed input to classifier to compute logits
-        logits = self.classifier(nextTensor)
-
-        return logits
+    def forward(self, input_ids, token_type_ids, attention_mask, labels=None):
+        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids,
+                             labels=labels)
+        return outputs
 
 
 class NLI_infer_Deberta(torch.nn.Module):
-    def __init__(self, model_path, model_config_path, freeze_deberta=True, num_in=768, num_hidden=50, num_out=2,
-                 max_seq_length=128, batch_size=32):
+    def __init__(self, target_model, model_path, model_config_path, freeze_deberta=True, num_labels=2,
+                 max_seq_length=512, batch_size=32):
         super(NLI_infer_Deberta, self).__init__()
-        self.model = DeBERTaTxtClassifier(model_path, model_config_path)
-        self.dataset = NLIDataset_DeBERTa(model_path, max_seq_length, batch_size)
+        pretrained_model = DeBERTaPretrainedModel(target_model)
+
+        self.model = DeBERTaTxtClassifier(pretrained_model, model_path, model_config_path, freeze_deberta=freeze_deberta,
+                                          max_seq_length=max_seq_length, batch_size=batch_size, num_labels=num_labels)
+        fileload = torch.load(model_path, map_location=device_name)
+
+        self.model.model.load_state_dict(fileload)
+        self.dataset = NLIDataset_DeBERTa(model_path, pretrained_model, max_seq_length, batch_size)
 
     def text_pred(self, text_data, batch_size):
-        self.model.eval()
         dataloader = self.dataset.transform_text(text_data, batch_size=batch_size)
 
         probs_all = []
-        # for input_ids, input_mask, segment_ids in tqdm(dataloader, desc="Evaluating"):
+
         for input_ids, input_mask, segment_ids in dataloader:
-            input_ids = input_ids
-            input_mask = input_mask
-            segment_ids = segment_ids
+            input_ids = input_ids.to(device)
+            input_mask = input_mask.to(device)
+            segment_ids = segment_ids.to(device)
 
             with torch.no_grad():
-                logits = self.model(input_ids, input_mask)
-                probs = functional.softmax(logits, dim=-1)
+                outputs = self.model(input_ids, segment_ids, input_mask)
+                probs = functional.softmax(outputs.logits, dim=-1)
                 probs_all.append(probs)
 
         return torch.cat(probs_all, dim=0)

@@ -1,23 +1,15 @@
 import argparse
 import os
-import numpy as np
-from TextFooler import dataloader
-from TextFooler.train_classifier import Model
-from TextFooler import criteria
 import random
-
+import numpy as np
 import pandas as pd
 
-import tensorflow as tf
-import tensorflow_hub as hub
+from settings import *
 
-import torch
-from torch.nn import functional
-from torch.utils.data import Dataset, DataLoader, SequentialSampler, TensorDataset
 
-from TextFooler.attack_classification import USE, pick_most_similar_words_batch, InputFeatures, NLI_infer_BERT, \
-    NLIDataset_BERT, attack, random_attack
-from deberta import DeBERTaTxtClassifier, NLI_infer_Deberta
+from TextFooler import criteria
+from TextFooler.attack_classification import USE, NLI_infer_BERT, attack
+from deberta import NLI_infer_Deberta
 
 
 def read_datasets(path, MR=True, encoding='utf8', shuffle=False):
@@ -59,14 +51,19 @@ def main():
                         help="the deberta config file path")
     parser.add_argument("--nclasses",
                         type=int,
-                        default=4,
+                        default=2,
                         help="How many classes for classification.")
     parser.add_argument("--target_model",
                         type=str,
                         required=True,
-                        choices=['wordLSTM', 'bert', 'wordCNN', 'deberta'],
+                        choices=['bert', 'deberta'],
                         help="Target models for text classification: fasttext, charcnn, word level lstm "
                              "For NLI: InferSent, ESIM, bert-base-uncased")
+    parser.add_argument("--target_model_type",
+                        type=str,
+                        choices=['base', 'xxlarge-v2'],
+                        default='base',
+                        help="If using DeBERTa model, what type of model is being used")
     parser.add_argument("--target_model_path",
                         type=str,
                         required=True,
@@ -91,6 +88,11 @@ def main():
                         type=str,
                         default='adv_results',
                         help="The output directory where the attack results will be written.")
+    parser.add_argument("--type_of_attack",
+                        type=str,
+                        choices=['all', 'original', 'pair_switch', 'pair_synonym'],
+                        default='all',
+                        help="What type of generative attack would you like to have performed")
 
     ## Model hyperparameters
     parser.add_argument("--sim_score_window",
@@ -102,7 +104,7 @@ def main():
                         type=float,
                         help="Required mininum importance score.")
     parser.add_argument("--sim_score_threshold",
-                        default=0.7,
+                        default=0.5,
                         type=float,
                         help="Required minimum semantic similarity score.")
     parser.add_argument("--synonym_num",
@@ -114,15 +116,11 @@ def main():
                         type=int,
                         help="Batch size to get prediction")
     parser.add_argument("--data_size",
-                        default=1000,
+                        default=100,
                         type=int,
                         help="Data size to create adversaries")
-    parser.add_argument("--perturb_ratio",
-                        default=0.,
-                        type=float,
-                        help="Whether use random perturbation for ablation study")
     parser.add_argument("--max_seq_length",
-                        default=128,
+                        default=512,
                         type=int,
                         help="max sequence length for BERT target model")
 
@@ -135,7 +133,7 @@ def main():
 
     # get data to attack
     # texts, labels = dataloader.read_corpus(args.dataset_path)
-    texts, labels = read_datasets(args.dataset_path)
+    texts, labels = read_datasets(args.dataset_path, shuffle=True)
     data = list(zip(texts, labels))
     data = data[:args.data_size]  # choose how many samples for adversary
     print("Data import finished!")
@@ -143,23 +141,19 @@ def main():
     # construct the model
     print("Building Model...")
     deberta_modified = False
-    if args.target_model == 'wordLSTM':
-        model = Model(args.word_embeddings_path, nclasses=args.nclasses).cuda()
-        checkpoint = torch.load(args.target_model_path, map_location='cuda:0')
-        model.load_state_dict(checkpoint)
-    elif args.target_model == 'wordCNN':
-        model = Model(args.word_embeddings_path, nclasses=args.nclasses, hidden_size=100, cnn=True).cuda()
-        checkpoint = torch.load(args.target_model_path, map_location='cuda:0')
-        model.load_state_dict(checkpoint)
-    elif args.target_model == 'bert':
-        model = NLI_infer_BERT(args.target_model_path, nclasses=args.nclasses, max_seq_length=args.max_seq_length)
+    if args.target_model == 'bert':
+        model = NLI_infer_BERT(args.target_model_path, nclasses=args.nclasses, max_seq_length=args.max_seq_length).to(device)
     elif args.target_model == 'deberta':
-        model = NLI_infer_Deberta(args.target_model_path, args.config_path, max_seq_length=args.max_seq_length)
+        model = NLI_infer_Deberta(args.target_model_type, args.target_model_path, args.config_path,
+                                  max_seq_length=args.max_seq_length, num_labels=args.nclasses).to(device)
         deberta_modified = True
     else:
         raise LookupError("The inputted target model does not exist")
-    predictor = model.text_pred
+
     print("Model built!")
+
+    model.eval()
+    predictor = model.text_pred
 
     # prepare synonym extractor
     # build dictionary via the embedding file
@@ -209,27 +203,20 @@ def main():
 
     stop_words_set = criteria.get_stopwords()
     print('Start attacking!')
+    model.eval()
     for idx, (text, true_label) in enumerate(data):
         if idx % 20 == 0:
             print('{} samples out of {} have been finished!'.format(idx, args.data_size))
-        if args.perturb_ratio > 0.:
-            new_text, num_changed, orig_label, \
-            new_label, num_queries = random_attack(text, true_label, predictor, args.perturb_ratio, stop_words_set,
-                                                   word2idx, idx2word, cos_sim, sim_predictor=use,
-                                                   sim_score_threshold=args.sim_score_threshold,
-                                                   import_score_threshold=args.import_score_threshold,
-                                                   sim_score_window=args.sim_score_window,
-                                                   synonym_num=args.synonym_num,
-                                                   batch_size=args.batch_size)
-        else:
-            new_text, num_changed, orig_label, \
-            new_label, num_queries = attack(text, true_label, predictor, stop_words_set,
-                                            word2idx, idx2word, cos_sim, sim_predictor=use,
-                                            sim_score_threshold=args.sim_score_threshold,
-                                            import_score_threshold=args.import_score_threshold,
-                                            sim_score_window=args.sim_score_window,
-                                            synonym_num=args.synonym_num,
-                                            batch_size=args.batch_size, deberta_modified=deberta_modified)
+        new_text, num_changed, orig_label, \
+        new_label, num_queries = attack(text, true_label, predictor, stop_words_set,
+                                        word2idx, idx2word, cos_sim, sim_predictor=use,
+                                        sim_score_threshold=args.sim_score_threshold,
+                                        import_score_threshold=args.import_score_threshold,
+                                        sim_score_window=args.sim_score_window,
+                                        synonym_num=args.synonym_num,
+                                        batch_size=args.batch_size,
+                                        deberta_modified=deberta_modified,
+                                        attack_type=args.type_of_attack)
 
         if true_label != orig_label:
             orig_failures += 1
@@ -238,7 +225,7 @@ def main():
         if true_label != new_label:
             adv_failures += 1
 
-        changed_rate = 1.0 * num_changed / len(text)
+        changed_rate = 1.0 * num_changed / len(text.split(' '))
 
         if true_label == orig_label and true_label != new_label:
             changed_rates.append(changed_rate)
@@ -249,8 +236,8 @@ def main():
 
     message = 'For target model {}: original accuracy: {:.3f}%, adv accuracy: {:.3f}%, ' \
               'avg changed rate: {:.3f}%, num of queries: {:.1f}\n'.format(args.target_model,
-                                                                           (1 - orig_failures / 1000) * 100,
-                                                                           (1 - adv_failures / 1000) * 100,
+                                                                           (1 - orig_failures / int(args.data_size)) * 100,
+                                                                           (1 - adv_failures / int(args.data_size)) * 100,
                                                                            np.mean(changed_rates) * 100,
                                                                            np.mean(nums_queries))
     print(message)
@@ -264,6 +251,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# python textfooler_attack.py --dataset_path outputs/ag/train_tok.csv --config_path model/base/config.json --nclasses 4 --target_model deberta --target_model_path model/base/pytorch_model.bin --counter_fitting_embeddings_path TextFooler/counter-fitted-vectors.txt --counter_fitting_cos_sim_path /scratch/jindi/adversary/cos_sim_counter_fitting.npy --USE_cache_path /scratch/jindi/tf_cache
-# python textfooler_attack.py --dataset_path outputs/ag/train_tok.csv --config_path model/base/config.json --nclasses 4 --target_model deberta --target_model_path model/base/pytorch_model.bin --counter_fitting_embeddings_path TextFooler/counter-fitted-vectors.txt --USE_cache_path /scratch/jindi/tf_cache

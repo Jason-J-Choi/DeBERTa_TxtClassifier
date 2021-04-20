@@ -138,3 +138,5 @@ dmypy.json
 datasets/
 outputs/
 TextFooler/counter-fitted-vectors.txt
+TextFooler/cos_sim_counter_fitting.npy
+adv_results/
