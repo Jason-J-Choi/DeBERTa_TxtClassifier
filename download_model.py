@@ -207,4 +207,4 @@ def load_model_state(path_or_pretrained_id, tag=None, no_cache=False, cache_dir=
     return model_state, model_config
 
 
-load_model_state('xxlarge-v2')
+load_model_state('base')
