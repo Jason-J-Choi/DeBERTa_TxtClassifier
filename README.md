@@ -1,4 +1,4 @@
-# DeBERTa Text Classifier
+# TextFooler on DeBERTa
 
 This repository is a purely academic implementation in determining the robustness of [ **DeBERTa**](https://arxiv.org/abs/2006.03654) in its ability to perform text classification from the [ **TextFooler**](https://arxiv.org/abs/1907.11932) adversarial generator.
 
